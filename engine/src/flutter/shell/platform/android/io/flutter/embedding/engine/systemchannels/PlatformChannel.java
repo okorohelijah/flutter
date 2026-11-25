@@ -5,6 +5,7 @@
 package io.flutter.embedding.engine.systemchannels;
 
 import android.content.pm.ActivityInfo;
+import android.os.SystemClock;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
@@ -13,9 +14,13 @@ import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.plugin.common.JSONMethodCodec;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
+import io.flutter.plugin.editing.PasteTimingLog;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -29,6 +34,11 @@ public class PlatformChannel {
 
   @NonNull public final MethodChannel channel;
   @Nullable private PlatformMessageHandler platformMessageHandler;
+  @Nullable private SystemContextMenuHandler systemContextMenuHandler;
+  // Clipboard text that was read inside the tap handler of the system context menu's Paste item
+  // and is waiting for the framework's "Clipboard.getData". See keepPasteTextForNextRead.
+  @Nullable private CharSequence keptPasteText;
+  private long keptPasteTextExpiresAtMillis;
   // This state belongs to the FlutterEngine, so retain it while Activities attach and detach.
   @Nullable private Boolean frameworkHandlesBack;
 
@@ -40,6 +50,30 @@ public class PlatformChannel {
           String method = call.method;
           Object arguments = call.arguments;
           Log.v(TAG, "Received '" + method + "' message.");
+
+          // The system context menu is shown by the FlutterView, not by the Activity-bound
+          // PlatformPlugin, so these two messages are answered before the check below, which
+          // drops everything when no PlatformPlugin is registered.
+          if (method.equals("ContextMenu.showSystemContextMenu")) {
+            try {
+              SystemContextMenuRequest request =
+                  decodeSystemContextMenuRequest((JSONObject) arguments);
+              if (systemContextMenuHandler != null) {
+                systemContextMenuHandler.showSystemContextMenu(request);
+              }
+              result.success(null);
+            } catch (JSONException exception) {
+              result.error("error", exception.getMessage(), null);
+            }
+            return;
+          }
+          if (method.equals("ContextMenu.hideSystemContextMenu")) {
+            if (systemContextMenuHandler != null) {
+              systemContextMenuHandler.hideSystemContextMenu();
+            }
+            result.success(null);
+            return;
+          }
 
           if (platformMessageHandler == null
               && !method.equals("SystemNavigator.setFrameworkHandlesBack")) {
@@ -165,8 +199,12 @@ public class PlatformChannel {
                     }
                   }
 
-                  CharSequence clipboardContent =
-                      platformMessageHandler.getClipboardData(clipboardFormat);
+                  // If the Paste item of Android's toolbar was just tapped and the clipboard was
+                  // read there and then, answer with that text instead of reading a second time.
+                  CharSequence clipboardContent = takeKeptPasteText();
+                  if (clipboardContent == null) {
+                    clipboardContent = platformMessageHandler.getClipboardData(clipboardFormat);
+                  }
                   if (clipboardContent != null) {
                     JSONObject response = new JSONObject();
                     response.put("text", clipboardContent);
@@ -228,6 +266,121 @@ public class PlatformChannel {
     if (platformMessageHandler != null && frameworkHandlesBack != null) {
       platformMessageHandler.setFrameworkHandlesBack(frameworkHandlesBack);
     }
+  }
+
+  /**
+   * Sets the {@link SystemContextMenuHandler} that shows and hides Android's floating text toolbar
+   * when the framework asks for the "system context menu". Pass null to stop handling.
+   */
+  public void setSystemContextMenuHandler(
+      @Nullable SystemContextMenuHandler systemContextMenuHandler) {
+    this.systemContextMenuHandler = systemContextMenuHandler;
+  }
+
+  /**
+   * Keeps {@code text} as the answer to the framework's next "Clipboard.getData", if that request
+   * arrives within {@code validForMillis}.
+   *
+   * <p>For the system context menu: Android trusts a clipboard read made right after a tap on its
+   * Paste item. The embedding reads at that moment, keeps the text here, and tells the framework
+   * "Paste was tapped". The framework's unchanged paste code then asks for the clipboard and gets
+   * this text, however long the round trip took.
+   */
+  public void keepPasteTextForNextRead(@NonNull CharSequence text, long validForMillis) {
+    keptPasteText = text;
+    keptPasteTextExpiresAtMillis = SystemClock.uptimeMillis() + validForMillis;
+  }
+
+  /** Returns the kept text once, or null if there is none or it is too old. */
+  @Nullable
+  private CharSequence takeKeptPasteText() {
+    final CharSequence text = keptPasteText;
+    keptPasteText = null;
+    if (text == null || SystemClock.uptimeMillis() > keptPasteTextExpiresAtMillis) {
+      return null;
+    }
+    PasteTimingLog.servedFromKeptText(); // Experiment only.
+    return text;
+  }
+
+  /**
+   * Informs Flutter that the system context menu went away without Flutter asking for it, for
+   * example because the Activity lost focus.
+   *
+   * <p>Do not call this in answer to "ContextMenu.hideSystemContextMenu": by then the framework
+   * has already forgotten the menu, and treats this message as an error.
+   */
+  public void systemContextMenuDismissed() {
+    Log.v(TAG, "Sending 'onDismissSystemContextMenu' message.");
+    channel.invokeMethod("ContextMenu.onDismissSystemContextMenu", null);
+  }
+
+  /**
+   * Informs Flutter that the user tapped one of the standard items (Paste, Cut, Copy, Select all,
+   * Share). Android only reports the tap; the framework does the work.
+   *
+   * @param type the item's type as the framework named it in the show request, e.g. "paste".
+   * @param pastedText for "paste" only: the clipboard's text if the embedding has already read it,
+   *     or null to let the framework read the clipboard.
+   */
+  public void systemContextMenuActionPerformed(
+      @NonNull String type, @Nullable CharSequence pastedText) {
+    Log.v(TAG, "Sending 'onPerformAction' message.");
+    Map<String, Object> args = new HashMap<>();
+    args.put("type", type);
+    if (pastedText != null) {
+      args.put("text", pastedText.toString());
+    }
+    channel.invokeMethod("ContextMenu.onPerformAction", args);
+  }
+
+  /**
+   * Informs Flutter that the user tapped an item the app added itself.
+   *
+   * @param callbackId the id the framework gave this item in the show request.
+   */
+  public void systemContextMenuCustomActionPerformed(@NonNull String callbackId) {
+    Log.v(TAG, "Sending 'onPerformCustomAction' message.");
+    // The framework reads the callback id from the second element. The first is the text input
+    // client id on iOS; the framework does not read it.
+    channel.invokeMethod("ContextMenu.onPerformCustomAction", Arrays.asList(0, callbackId));
+  }
+
+  /**
+   * Decodes the arguments of "ContextMenu.showSystemContextMenu".
+   *
+   * @throws JSONException if the rectangle is missing or an item has no type.
+   */
+  @NonNull
+  private SystemContextMenuRequest decodeSystemContextMenuRequest(@NonNull JSONObject arguments)
+      throws JSONException {
+    JSONObject rect = arguments.getJSONObject("targetRect");
+    double x = rect.getDouble("x");
+    double y = rect.getDouble("y");
+    double width = rect.getDouble("width");
+    double height = rect.getDouble("height");
+
+    List<SystemContextMenuItem> items = new ArrayList<>();
+    JSONArray encodedItems = arguments.optJSONArray("items");
+    if (encodedItems != null) {
+      for (int i = 0; i < encodedItems.length(); i++) {
+        JSONObject encodedItem = encodedItems.getJSONObject(i);
+        items.add(
+            new SystemContextMenuItem(
+                encodedItem.getString("type"),
+                encodedItem.isNull("title") ? null : encodedItem.getString("title"),
+                // Only items of type "custom" carry "id".
+                encodedItem.isNull("id") ? null : encodedItem.getString("id")));
+      }
+    }
+    return new SystemContextMenuRequest(
+        x,
+        y,
+        width,
+        height,
+        items,
+        arguments.optString("androidPasteStrategy", ""),
+        arguments.optBoolean("androidAllowPasteInOverflow", false));
   }
 
   /** Informs Flutter of a change in the SystemUI overlays. */
@@ -568,6 +721,97 @@ public class PlatformChannel {
      * https://developer.android.com/reference/android/content/Intent.html#ACTION_SEND
      */
     void share(@NonNull String text);
+  }
+
+  /**
+   * Handler that shows and hides Android's floating text toolbar when the framework asks for the
+   * "system context menu".
+   *
+   * <p>Separate from {@link PlatformMessageHandler} because that one is implemented by {@link
+   * io.flutter.plugin.platform.PlatformPlugin}, which needs an Activity, while the toolbar needs
+   * the View that Flutter draws into.
+   */
+  public interface SystemContextMenuHandler {
+    /** The framework wants the toolbar shown, or moved and refreshed if it is already showing. */
+    void showSystemContextMenu(@NonNull SystemContextMenuRequest request);
+
+    /** The framework wants the toolbar gone. Called even when it is already gone. */
+    void hideSystemContextMenu();
+  }
+
+  /** What the framework sends in "ContextMenu.showSystemContextMenu". */
+  public static class SystemContextMenuRequest {
+    /** The rectangle the toolbar points at, in logical pixels of the Flutter view. */
+    public final double x;
+
+    public final double y;
+    public final double width;
+    public final double height;
+
+    /** The items to show, in the order the framework listed them. */
+    @NonNull public final List<SystemContextMenuItem> items;
+
+    /**
+     * Experiment only: who reads the clipboard after a tap on Paste. One of
+     * "platformReadsAndInserts", "platformReadsFlutterInserts", "platformReadsAndKeeps",
+     * "flutterReadsAndInserts", or empty for the default.
+     */
+    @NonNull public final String pasteStrategy;
+
+    /** Experiment only: allow Android to move Paste into the overflow list. */
+    public final boolean allowPasteInOverflow;
+
+    public SystemContextMenuRequest(
+        double x,
+        double y,
+        double width,
+        double height,
+        @NonNull List<SystemContextMenuItem> items,
+        @NonNull String pasteStrategy,
+        boolean allowPasteInOverflow) {
+      this.x = x;
+      this.y = y;
+      this.width = width;
+      this.height = height;
+      this.items = items;
+      this.pasteStrategy = pasteStrategy;
+      this.allowPasteInOverflow = allowPasteInOverflow;
+    }
+  }
+
+  /** One item of a {@link SystemContextMenuRequest}. */
+  public static class SystemContextMenuItem {
+    /** "paste", "cut", "copy", "selectAll", "share", "custom", or a type Android does not show. */
+    @NonNull public final String type;
+
+    /** The label chosen by the framework, or null to use Android's own label. */
+    @Nullable public final String title;
+
+    /** For "custom" items: the id to send back when the item is tapped. Null otherwise. */
+    @Nullable public final String callbackId;
+
+    public SystemContextMenuItem(
+        @NonNull String type, @Nullable String title, @Nullable String callbackId) {
+      this.type = type;
+      this.title = title;
+      this.callbackId = callbackId;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+      if (!(other instanceof SystemContextMenuItem)) {
+        return false;
+      }
+      SystemContextMenuItem item = (SystemContextMenuItem) other;
+      return type.equals(item.type)
+          && Objects.equals(title, item.title)
+          && Objects.equals(callbackId, item.callbackId);
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(type, title, callbackId);
+    }
   }
 
   /** Types of sounds the Android OS can play on behalf of an application. */

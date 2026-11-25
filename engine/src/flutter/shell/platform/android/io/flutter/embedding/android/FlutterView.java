@@ -66,6 +66,7 @@ import io.flutter.embedding.engine.systemchannels.SettingsChannel;
 import io.flutter.plugin.common.BinaryMessenger;
 import io.flutter.plugin.editing.ScribePlugin;
 import io.flutter.plugin.editing.SpellCheckPlugin;
+import io.flutter.plugin.editing.SystemContextMenuPlugin;
 import io.flutter.plugin.editing.TextInputPlugin;
 import io.flutter.plugin.localization.LocalizationPlugin;
 import io.flutter.plugin.mouse.MouseCursorPlugin;
@@ -146,6 +147,7 @@ public class FlutterView extends FrameLayout
   @Nullable private TextInputPlugin textInputPlugin;
   @Nullable private SpellCheckPlugin spellCheckPlugin;
   @Nullable private ScribePlugin scribePlugin;
+  @Nullable private SystemContextMenuPlugin systemContextMenuPlugin;
   @Nullable private LocalizationPlugin localizationPlugin;
   @Nullable private KeyboardManager keyboardManager;
   @Nullable private AndroidTouchProcessor androidTouchProcessor;
@@ -1225,6 +1227,10 @@ public class FlutterView extends FrameLayout
         new ScribePlugin(
             this, textInputPlugin.getInputMethodManager(), this.flutterEngine.getScribeChannel());
 
+    // Shows Android's own floating text toolbar when the framework asks for it.
+    systemContextMenuPlugin =
+        new SystemContextMenuPlugin(this, this.flutterEngine.getPlatformChannel(), textInputPlugin);
+
     localizationPlugin = this.flutterEngine.getLocalizationPlugin();
 
     keyboardManager = new KeyboardManager(this);
@@ -1328,6 +1334,10 @@ public class FlutterView extends FrameLayout
     // signifies that this View does not process input (until a new engine is attached).
     // TODO(mattcarroll): once this is proven to work, move this line ot TextInputPlugin
     textInputPlugin.getInputMethodManager().restartInput(this);
+    if (systemContextMenuPlugin != null) {
+      systemContextMenuPlugin.destroy();
+      systemContextMenuPlugin = null;
+    }
     textInputPlugin.destroy();
     keyboardManager.destroy();
     if (spellCheckPlugin != null) {
@@ -1566,6 +1576,10 @@ public class FlutterView extends FrameLayout
                 == 1)
         .setUse24HourFormat(DateFormat.is24HourFormat(getContext()))
         .setPlatformBrightness(brightness)
+        // Every Android version Flutter supports can show a floating toolbar (added in API 23).
+        // Whether the framework should prefer it on every version is a separate question: only
+        // Android 17 and later treat a paste started from it as trusted.
+        .setSupportsShowingSystemContextMenu(true)
         .send();
   }
 

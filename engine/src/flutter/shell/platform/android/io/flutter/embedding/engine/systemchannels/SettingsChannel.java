@@ -31,6 +31,8 @@ public class SettingsChannel {
   private static final String ALWAYS_USE_24_HOUR_FORMAT = "alwaysUse24HourFormat";
   private static final String PLATFORM_BRIGHTNESS = "platformBrightness";
   private static final String CONFIGURATION_ID = "configurationId";
+  private static final String SUPPORTS_SHOWING_SYSTEM_CONTEXT_MENU =
+      "supportsShowingSystemContextMenu";
 
   // When hasNonlinearTextScalingSupport() returns false, this will not be initialized.
   @VisibleForTesting final ConfigurationQueue configurationQueue = new ConfigurationQueue();
@@ -99,6 +101,18 @@ public class SettingsChannel {
     @NonNull
     public MessageBuilder setPlatformBrightness(@NonNull PlatformBrightness brightness) {
       message.put(PLATFORM_BRIGHTNESS, brightness.name);
+      return this;
+    }
+
+    /**
+     * Tells the framework whether this embedding can show Android's own floating text toolbar
+     * when asked with "ContextMenu.showSystemContextMenu". The framework treats a missing value as
+     * false.
+     */
+    @NonNull
+    public MessageBuilder setSupportsShowingSystemContextMenu(
+        boolean supportsShowingSystemContextMenu) {
+      message.put(SUPPORTS_SHOWING_SYSTEM_CONTEXT_MENU, supportsShowingSystemContextMenu);
       return this;
     }
 

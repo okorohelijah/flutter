@@ -437,6 +437,7 @@ public class InputConnectionAdaptor extends BaseInputConnection
     } else if (id == android.R.id.paste) {
       ClipboardManager clipboard =
           (ClipboardManager) mFlutterView.getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+      PasteTimingLog.beforeClipboardRead("InputConnectionAdaptor"); // Experiment only.
       ClipData clip = clipboard.getPrimaryClip();
       if (clip != null) {
         CharSequence textToPaste = clip.getItemAt(0).coerceToText(mFlutterView.getContext());

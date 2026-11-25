@@ -29,6 +29,7 @@ import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 import io.flutter.Log;
 import io.flutter.embedding.engine.systemchannels.PlatformChannel;
+import io.flutter.plugin.editing.PasteTimingLog;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.List;
@@ -632,6 +633,7 @@ public class PlatformPlugin {
 
     CharSequence itemText = null;
     try {
+      PasteTimingLog.beforeClipboardRead("PlatformPlugin"); // Experiment only.
       ClipData clip = clipboard.getPrimaryClip();
       if (clip == null) return null;
       if (format == null || format == PlatformChannel.ClipboardContentFormat.PLAIN_TEXT) {

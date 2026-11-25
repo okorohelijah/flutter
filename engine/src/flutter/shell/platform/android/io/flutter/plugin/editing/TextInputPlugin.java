@@ -677,6 +677,23 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   }
   // -------- End: KeyboardManager Synchronous Responder -------
 
+  /**
+   * Performs one of Android's standard text actions (for example {@code android.R.id.paste}) on
+   * the field the framework is editing, with the code that already serves the same request when a
+   * keyboard makes it. The framework is told the result like any other edit made by a keyboard.
+   *
+   * <p>Used by {@link SystemContextMenuPlugin} for a tap on Paste in Android's own toolbar.
+   *
+   * @return false if there is no keyboard connection to a framework text field right now.
+   */
+  public boolean performContextMenuAction(int id) {
+    if (inputTarget.type != InputTarget.Type.FRAMEWORK_CLIENT
+        || !(lastInputConnection instanceof InputConnectionAdaptor)) {
+      return false;
+    }
+    return lastInputConnection.performContextMenuAction(id);
+  }
+
   // -------- Start: ListenableEditingState watcher implementation -------
 
   @Override
