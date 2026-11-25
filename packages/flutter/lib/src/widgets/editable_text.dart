@@ -2907,6 +2907,21 @@ class EditableTextState extends State<EditableText>
     _pasteText(cause, data.text!);
   }
 
+  /// Pastes `text` that the platform has already read from the clipboard.
+  ///
+  /// Does what [pasteText] does after its own clipboard read: replaces the
+  /// selection through [userUpdateTextEditingValue] (so input formatters and
+  /// [EditableText.onChanged] run) and, when `cause` is
+  /// [SelectionChangedCause.toolbar], scrolls to the cursor and hides the
+  /// toolbar.
+  ///
+  /// Added for the prototype of https://github.com/flutter/flutter/issues/184902,
+  /// where Android reads the clipboard inside the tap handler of its own
+  /// toolbar, the only moment at which the read is guaranteed to be trusted.
+  void pasteProvidedText(SelectionChangedCause cause, String text) {
+    _pasteText(cause, text);
+  }
+
   void _pasteText(SelectionChangedCause cause, String text) {
     if (!_allowPaste) {
       return;

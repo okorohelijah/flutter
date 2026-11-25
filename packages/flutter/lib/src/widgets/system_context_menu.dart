@@ -62,6 +62,7 @@ class SystemContextMenu extends StatefulWidget {
     required this.anchor,
     required this.items,
     this.onSystemHide,
+    this.onSystemAction,
   });
 
   /// Creates an instance of [SystemContextMenu] for the field indicated by the
@@ -86,7 +87,41 @@ class SystemContextMenu extends StatefulWidget {
       ),
       items: items ?? getDefaultItems(editableTextState),
       onSystemHide: () => editableTextState.hideToolbar(false),
+      onSystemAction: (SystemContextMenuAction action, String? pastedText) {
+        _performActionOnField(editableTextState, action, pastedText);
+      },
     );
+  }
+
+  // Android only (prototype for https://github.com/flutter/flutter/issues/184902).
+  //
+  // Android's toolbar only reports which button was tapped; doing the work is
+  // left to the app. This runs the same EditableTextState methods that the
+  // buttons of the Flutter-drawn toolbar call, so input formatters, onChanged
+  // and the selection behave exactly as they do today.
+  static void _performActionOnField(
+    EditableTextState editableTextState,
+    SystemContextMenuAction action,
+    String? pastedText,
+  ) {
+    switch (action) {
+      case SystemContextMenuAction.paste:
+        if (pastedText != null) {
+          // The platform already read the clipboard inside the tap handler.
+          editableTextState.pasteProvidedText(SelectionChangedCause.toolbar, pastedText);
+        } else {
+          // The platform only said "Paste was tapped": read the clipboard now.
+          editableTextState.pasteText(SelectionChangedCause.toolbar);
+        }
+      case SystemContextMenuAction.cut:
+        editableTextState.cutSelection(SelectionChangedCause.toolbar);
+      case SystemContextMenuAction.copy:
+        editableTextState.copySelection(SelectionChangedCause.toolbar);
+      case SystemContextMenuAction.selectAll:
+        editableTextState.selectAll(SelectionChangedCause.toolbar);
+      case SystemContextMenuAction.share:
+        editableTextState.shareSelection(SelectionChangedCause.toolbar);
+    }
   }
 
   /// The [Rect] that the context menu should point to.
@@ -119,16 +154,30 @@ class SystemContextMenu extends StatefulWidget {
   /// to be hidden.
   final VoidCallback? onSystemHide;
 
+  /// Called when the user taps one of the system's built-in buttons and the
+  /// platform leaves the work to Flutter.
+  ///
+  /// Android only. On iOS the system performs built-in actions itself.
+  final SystemContextMenuActionCallback? onSystemAction;
+
   /// Whether the current device supports showing the system context menu.
   ///
-  /// Currently, this is only supported on newer versions of iOS.
+  /// Currently, this is supported on newer versions of iOS, and on Android
+  /// when the embedding reports that it can show Android's floating toolbar.
   ///
   /// See also:
   ///
   ///  * [isSupportedByField], which uses this method and determines whether an
   ///    individual [EditableTextState] supports the system context menu.
   static bool isSupported(BuildContext context) {
-    return defaultTargetPlatform == TargetPlatform.iOS &&
+    // The platform has the last word: it sends supportsShowingSystemContextMenu
+    // in its settings message, and that is false unless it knows how to show
+    // the menu. Android is allowed here for the prototype of
+    // https://github.com/flutter/flutter/issues/184902.
+    final bool isSupportedPlatform =
+        defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.android;
+    return isSupportedPlatform &&
         (MediaQuery.maybeSupportsShowingSystemContextMenu(context) ?? false);
   }
 
@@ -203,7 +252,14 @@ class _SystemContextMenuState extends State<SystemContextMenu> {
   @override
   void initState() {
     super.initState();
-    _systemContextMenuController = SystemContextMenuController(onSystemHide: widget.onSystemHide);
+    _systemContextMenuController = SystemContextMenuController(
+      onSystemHide: widget.onSystemHide,
+      // Read the widget each time: the widget is rebuilt (with a new closure)
+      // whenever the selection moves, while this State and its controller stay.
+      onSystemAction: (SystemContextMenuAction action, String? pastedText) {
+        widget.onSystemAction?.call(action, pastedText);
+      },
+    );
   }
 
   @override

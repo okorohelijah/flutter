@@ -2886,7 +2886,7 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
   /// Creates an instance of [SystemContextMenuController].
   ///
   /// Not shown until [show] is called.
-  SystemContextMenuController({this.onSystemHide}) {
+  SystemContextMenuController({this.onSystemHide, this.onSystemAction}) {
     ServicesBinding.systemContextMenuClient = this;
   }
 
@@ -2899,6 +2899,25 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
   /// This is not called when [show]ing a new system context menu causes another
   /// to be hidden.
   final VoidCallback? onSystemHide;
+
+  /// Called when the user taps a built-in button and the platform leaves the
+  /// work to Flutter.
+  ///
+  /// Android only. On iOS the system performs built-in actions itself.
+  final SystemContextMenuActionCallback? onSystemAction;
+
+  /// Experiment switch for https://github.com/flutter/flutter/issues/184902:
+  /// who reads the clipboard after a tap on Paste in Android's toolbar.
+  ///
+  /// Sent to Android with every show request, so it can be changed while the
+  /// app runs. Ignored on other platforms.
+  static AndroidSystemContextMenuPasteStrategy debugAndroidPasteStrategy =
+      AndroidSystemContextMenuPasteStrategy.platformReadsFlutterInserts;
+
+  /// Experiment switch for https://github.com/flutter/flutter/issues/184902:
+  /// when true, Android does not force Paste onto the main bar, so a bar with
+  /// many items ahead of Paste pushes it into the overflow list.
+  static bool debugAndroidAllowPasteInOverflow = false;
 
   static const MethodChannel _channel = SystemChannels.platform;
 
@@ -2954,6 +2973,14 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
       'This may indicate that the menu item was not properly registered.',
     );
     callback?.call();
+  }
+
+  @override
+  void handleSystemContextMenuAction(SystemContextMenuAction action, String? pastedText) {
+    if (_isDisposed || !isVisible) {
+      return;
+    }
+    onSystemAction?.call(action, pastedText);
   }
   // End SystemContextMenuClient.
 
@@ -3092,6 +3119,10 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
         'height': targetRect.height,
       },
       'items': itemsJson,
+      if (defaultTargetPlatform == TargetPlatform.android)
+        'androidPasteStrategy': debugAndroidPasteStrategy.name,
+      if (defaultTargetPlatform == TargetPlatform.android && debugAndroidAllowPasteInOverflow)
+        'androidAllowPasteInOverflow': true,
     });
   }
 
@@ -3145,6 +3176,36 @@ class SystemContextMenuController with SystemContextMenuClient, Diagnosticable {
     hide();
     _isDisposed = true;
   }
+}
+
+/// Experiment switch for https://github.com/flutter/flutter/issues/184902:
+/// the ways a tap on Paste in Android's toolbar can become text in the
+/// field.
+///
+/// Android 17 shows no "pasted from your clipboard" message if the app reads
+/// the clipboard within one second of the tap. The ways differ in which side
+/// reads, and which side inserts.
+///
+/// The names are sent as-is to Android in `ContextMenu.showSystemContextMenu`.
+enum AndroidSystemContextMenuPasteStrategy {
+  /// "A": Android reads the clipboard inside the tap handler and inserts the
+  /// text itself, with the code it already uses when a keyboard asks for a
+  /// paste. Flutter is told the field's new text, as if it had been typed.
+  platformReadsAndInserts,
+
+  /// "A-prime": Android reads the clipboard inside the tap handler and hands
+  /// the text to Flutter, which inserts it with its normal paste code.
+  platformReadsFlutterInserts,
+
+  /// "A-kept": Android reads the clipboard inside the tap handler and keeps
+  /// the text, then only says "Paste was tapped". Flutter pastes as it does
+  /// today; its `Clipboard.getData` is answered with the kept text instead of
+  /// a second clipboard read.
+  platformReadsAndKeeps,
+
+  /// "B": Android only says "Paste was tapped". Flutter pastes as it does
+  /// today, which asks Android for the clipboard in a second message.
+  flutterReadsAndInserts,
 }
 
 /// Describes a context menu button that will be rendered in the system context

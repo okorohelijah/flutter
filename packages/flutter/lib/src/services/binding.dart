@@ -435,6 +435,24 @@ mixin ServicesBinding on BindingBase, SchedulerBinding {
         final args = methodCall.arguments as List<dynamic>;
         final callbackId = args[1] as String;
         _systemContextMenuClient!.handleCustomContextMenuAction(callbackId);
+      // Android only (prototype for https://github.com/flutter/flutter/issues/184902).
+      // The user tapped one of the built-in buttons of Android's toolbar.
+      // Android reports the tap and leaves the work to the app.
+      case 'ContextMenu.onPerformAction':
+        if (_systemContextMenuClient == null) {
+          // The menu was hidden by Flutter while the tap was on its way here.
+          return;
+        }
+        final args = methodCall.arguments as Map<String, dynamic>;
+        final SystemContextMenuAction? action = SystemContextMenuAction.values
+            .asNameMap()[args['type']];
+        if (action == null) {
+          return;
+        }
+        // Non-null only when the platform read the clipboard itself, inside
+        // the tap handler, and hands the text over to be inserted.
+        final pastedText = args['text'] as String?;
+        _systemContextMenuClient!.handleSystemContextMenuAction(action, pastedText);
       case 'SystemChrome.systemUIChange':
         final args = methodCall.arguments as List<dynamic>;
         await _systemUiChangeCallback?.call(args[0] as bool);
@@ -704,4 +722,47 @@ mixin SystemContextMenuClient {
 
   /// Called when a custom context menu action is triggered.
   void handleCustomContextMenuAction(String actionId);
+
+  /// Called when the user taps a built-in button of the system context menu
+  /// and the platform leaves the work to Flutter.
+  ///
+  /// Android only. `pastedText` is non-null when the platform has already
+  /// read the clipboard for a [SystemContextMenuAction.paste].
+  ///
+  /// Does nothing by default, so existing implementers keep compiling.
+  void handleSystemContextMenuAction(SystemContextMenuAction action, String? pastedText) {}
 }
+
+/// A built-in button of the system context menu whose work the platform
+/// leaves to Flutter.
+///
+/// Android only: Android's toolbar reports which button was tapped and
+/// nothing else, unlike iOS, which performs built-in actions itself.
+///
+/// The names are the `type` strings of the method channel message
+/// `ContextMenu.onPerformAction`.
+enum SystemContextMenuAction {
+  /// Insert the clipboard's text at the selection.
+  paste,
+
+  /// Move the selected text to the clipboard.
+  cut,
+
+  /// Copy the selected text to the clipboard.
+  copy,
+
+  /// Select all of the field's text.
+  selectAll,
+
+  /// Open the platform's share sheet with the selected text.
+  share,
+}
+
+/// Signature of the callback that receives a [SystemContextMenuAction].
+///
+/// `pastedText` is non-null only for [SystemContextMenuAction.paste], and only
+/// when the platform read the clipboard itself.
+typedef SystemContextMenuActionCallback = void Function(
+  SystemContextMenuAction action,
+  String? pastedText,
+);
